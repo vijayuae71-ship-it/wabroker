@@ -12,6 +12,9 @@ import { initDatabase } from './db/init';
 
 const app = express();
 
+// Trust Railway's proxy (required for rate-limit + correct IP headers)
+app.set('trust proxy', 1);
+
 // Security
 app.use(helmet());
 app.use(cors({ origin: config.dashboardUrl, credentials: true }));
