@@ -26,41 +26,17 @@ twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
       return res.status(200).set('Content-Type', 'text/xml').send('<Response></Response>');
     }
 
-    let agencyId: string;
-    try {
-      agencyId = getDefaultAgencyId();
-    } catch (e) {
-      const err = e as Error;
-      return res.status(200).set('Content-Type', 'text/xml').send(twiml(`DEBUG-AGENCY: ${err.message}`));
-    }
+    const agencyId = getDefaultAgencyId();
 
-    let lead: Record<string, unknown>;
-    try {
-      const result = await leadService.findOrCreate(agencyId, from, contactName || undefined);
-      lead = result.lead;
-    } catch (e) {
-      const err = e as Error;
-      return res.status(200).set('Content-Type', 'text/xml').send(twiml(`DEBUG-LEAD: ${err.message}`));
-    }
+    const { lead } = await leadService.findOrCreate(agencyId, from, contactName || undefined);
 
-    let conversation: Record<string, unknown>;
-    try {
-      conversation = await leadService.getOrCreateConversation(lead.id as string, agencyId);
-    } catch (e) {
-      const err = e as Error;
-      return res.status(200).set('Content-Type', 'text/xml').send(twiml(`DEBUG-CONV: ${err.message}`));
-    }
+    const conversation = await leadService.getOrCreateConversation(lead.id as string, agencyId);
 
-    try {
-      await leadService.saveMessage(conversation.id as string, 'inbound', incomingText, {
-        senderType: 'lead',
-        messageType: 'text',
-        whatsappMessageId: messageId,
-      });
-    } catch (e) {
-      const err = e as Error;
-      return res.status(200).set('Content-Type', 'text/xml').send(twiml(`DEBUG-SAVEMSG: ${err.message}`));
-    }
+    await leadService.saveMessage(conversation.id as string, 'inbound', incomingText, {
+      senderType: 'lead',
+      messageType: 'text',
+      whatsappMessageId: messageId,
+    });
 
     if (conversation.handling_mode === 'agent') {
       return res.status(200).set('Content-Type', 'text/xml').send('<Response></Response>');
@@ -68,22 +44,17 @@ twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
 
     await leadService.updateLead(lead.id as string, { last_contacted_at: new Date() });
 
-    let aiResponse: { message: string; leadUpdates: Record<string, unknown>; handoffRequired: boolean; handoffReason: string | null };
-    try {
-      aiResponse = await processMessage(
-        conversation.id as string,
-        lead.id as string,
-        incomingText,
-        'text',
-        undefined
-      );
-    } catch (e) {
-      const err = e as Error;
-      return res.status(200).set('Content-Type', 'text/xml').send(twiml(`DEBUG-AI: ${err.message}`));
-    }
+    const aiResponse = await processMessage(
+      conversation.id as string,
+      lead.id as string,
+      incomingText,
+      'text',
+      undefined
+    );
 
-    if (Object.keys(aiResponse.leadUpdates).length > 0) {
-      await leadService.updateLead(lead.id as string, aiResponse.leadUpdates);
+    const leadUpdates = aiResponse.leadUpdates || {};
+    if (Object.keys(leadUpdates).length > 0) {
+      await leadService.updateLead(lead.id as string, leadUpdates);
     }
 
     await leadService.saveMessage(conversation.id as string, 'outbound', aiResponse.message, {
@@ -104,14 +75,14 @@ twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
             [agent.id, conversation.id]
           );
           await leadService.updateLead(lead.id as string, { assigned_agent_id: agent.id, status: 'in_progress' });
-          await leadService.notifyAgent(agent.id, lead.id as string, `Hot lead: ${lead.name || from}`);
+          await leadService.notifyAgent(agent.id, lead.id as string, `Hot lead: ${(lead.name as string) || from}`);
         }
       } catch (e) {
         console.error('Handoff error:', e);
       }
     }
 
-    const score = aiResponse.leadUpdates.score as number;
+    const score = (leadUpdates.score as number) || 0;
     if (score >= 80) await leadService.updateLead(lead.id as string, { status: 'hot' });
     else if (score >= 40) await leadService.updateLead(lead.id as string, { status: 'qualifying' });
 
@@ -120,6 +91,8 @@ twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
   } catch (err) {
     const e = err as Error;
     console.error('Twilio webhook error:', e);
-    return res.status(200).set('Content-Type', 'text/xml').send(twiml(`DEBUG-UNKNOWN: ${e.message}`));
+    return res.status(200).set('Content-Type', 'text/xml').send(
+      twiml('Sorry, I am having a technical issue. Please try again in a moment.')
+    );
   }
 });
