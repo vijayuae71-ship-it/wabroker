@@ -1,5 +1,4 @@
 import { Router, Request, Response } from 'express';
-import { twilioService } from '../services/twilio';
 import { leadService } from '../services/lead';
 import { processMessage } from '../ai/conversation';
 import { query } from '../db';
@@ -7,38 +6,40 @@ import { getDefaultAgencyId } from '../db/init';
 
 export const twilioWebhookRouter = Router();
 
-twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
-  res.status(200).set('Content-Type', 'text/xml').send('<Response></Response>');
+function twiml(message: string): string {
+  const escaped = message
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escaped}</Message></Response>`;
+}
 
+twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
   try {
     const body = req.body as Record<string, string>;
-    const parsed = twilioService.parseWebhookMessage(body);
+    const from = body.From?.replace('whatsapp:', '') || '';
+    const incomingText = body.Body || '';
+    const contactName = body.ProfileName || '';
+    const messageId = body.MessageSid || '';
 
-    if (!parsed) return;
-    if (!parsed.text && parsed.type === 'text') return;
-
-    const { from, text, contactName, messageId } = parsed;
-    const incomingText = text || '';
+    if (!from || !incomingText) {
+      return res.status(200).set('Content-Type', 'text/xml').send('<Response></Response>');
+    }
 
     const agencyId = getDefaultAgencyId();
 
     const { lead } = await leadService.findOrCreate(agencyId, from, contactName || undefined);
     const conversation = await leadService.getOrCreateConversation(lead.id, agencyId);
 
-    if (conversation.handling_mode === 'agent') {
-      await leadService.saveMessage(conversation.id, 'inbound', incomingText, {
-        senderType: 'lead',
-        messageType: parsed.type,
-        whatsappMessageId: messageId,
-      });
-      return;
-    }
-
     await leadService.saveMessage(conversation.id, 'inbound', incomingText, {
       senderType: 'lead',
-      messageType: parsed.type,
+      messageType: 'text',
       whatsappMessageId: messageId,
     });
+
+    if (conversation.handling_mode === 'agent') {
+      return res.status(200).set('Content-Type', 'text/xml').send('<Response></Response>');
+    }
 
     await leadService.updateLead(lead.id, { last_contacted_at: new Date() });
 
@@ -54,11 +55,9 @@ twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
       await leadService.updateLead(lead.id, aiResponse.leadUpdates);
     }
 
-    const sentId = await twilioService.sendTextMessage(from, aiResponse.message);
-
     await leadService.saveMessage(conversation.id, 'outbound', aiResponse.message, {
       senderType: 'ai',
-      whatsappMessageId: sentId || undefined,
+      whatsappMessageId: undefined,
     });
 
     if (aiResponse.handoffRequired) {
@@ -81,7 +80,10 @@ twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
     if (score >= 80) await leadService.updateLead(lead.id, { status: 'hot' });
     else if (score >= 40) await leadService.updateLead(lead.id, { status: 'qualifying' });
 
+    return res.status(200).set('Content-Type', 'text/xml').send(twiml(aiResponse.message));
+
   } catch (err) {
     console.error('Twilio webhook error:', err);
+    return res.status(200).set('Content-Type', 'text/xml').send('<Response><Message>Sorry, I am having a technical issue. Please try again in a moment.</Message></Response>');
   }
 });
