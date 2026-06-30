@@ -32,6 +32,22 @@ twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
 
     const conversation = await leadService.getOrCreateConversation(lead.id as string, agencyId);
 
+    // ── Fresh session check: reset qualifying data if no prior messages ────────
+    // Must happen BEFORE saveMessage (webhook saves inbound msg first, so after
+    // save the count would be 1 and the "=== 0" check would never fire).
+    const priorMsgResult = await query(
+      `SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = $1`,
+      [conversation.id]
+    );
+    const priorMsgCount = parseInt(priorMsgResult.rows[0]?.cnt || '0', 10);
+    if (priorMsgCount === 0) {
+      await query(
+        `UPDATE leads SET intent = NULL, property_type = NULL, preferred_areas = NULL,
+         budget_min = NULL, budget_max = NULL, timeline = NULL WHERE id = $1`,
+        [lead.id]
+      );
+    }
+
     await leadService.saveMessage(conversation.id as string, 'inbound', incomingText, {
       senderType: 'lead',
       messageType: 'text',

@@ -180,25 +180,6 @@ export async function processMessage(
 
   const userText = (mediaTranscription || incomingMessage || '').trim();
 
-  // ── Fresh conversation check: if no prior messages, reset qualifying data ──
-  // This prevents stale DB data from skipping questions on a new chat session
-  const msgCountResult = await query(
-    `SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = $1`,
-    [conversationId]
-  );
-  const priorMessageCount = parseInt(msgCountResult.rows[0]?.cnt || '0', 10);
-
-  if (priorMessageCount === 0) {
-    // First message in this conversation — wipe qualifying fields so we start fresh
-    await query(
-      `UPDATE leads SET intent = NULL, property_type = NULL, preferred_areas = NULL,
-       budget_min = NULL, budget_max = NULL, timeline = NULL WHERE id = $1`,
-      [leadId]
-    );
-    lead = { ...lead, intent: null, property_type: null, preferred_areas: null,
-             budget_min: null, budget_max: null, timeline: null };
-  }
-
   const stage = getQualifyingStage(lead);
 
   // ── Handle FAQs / off-topic with GPT (only when not in structured flow) ────
