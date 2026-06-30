@@ -10,12 +10,23 @@ export interface WebChatMessage {
   content: string;
 }
 
+export interface PrefilledParams {
+  intent?: string;
+  type?: string;
+  area?: string;
+  budget_min?: number;
+  budget_max?: number;
+  timeline?: string;
+  name?: string;
+}
+
 export interface WebChatResponse {
   message: string;
   language: string;
   stage: string;
   properties: Property[];
   quickReplies?: string[];
+  contactCard?: boolean;
 }
 
 const WEB_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
@@ -27,14 +38,44 @@ You are in web chat mode. The frontend renders beautiful visual property cards a
 - Keep ALL messages to 1-3 sentences max. Punchy, warm, conversational.
 - DO NOT format property details in text. The UI handles all visual display.
 - Respond in plain text only — no JSON, no markdown lists.
+- NEVER ask for information that was already provided (the client came from WhatsApp with filters pre-set).
+- After showing properties, ask for their name and contact details warmly.
+- If they skip contact details, show the contact card and wish them well.
 `;
 
 export async function processWebMessage(
   message: string,
-  history: WebChatMessage[]
+  history: WebChatMessage[],
+  prefilled?: PrefilledParams,
+  leadInfo?: { name?: string; phone?: string; email?: string }
 ): Promise<WebChatResponse> {
+
+  // ── If this is the first message with pre-filled params from WhatsApp ────
+  const isPrefilledInit = prefilled && Object.keys(prefilled).length > 0 && history.length === 0;
+
+  if (isPrefilledInit) {
+    return await handlePrefilledSearch(prefilled!);
+  }
+
   const allText = history.map(h => h.content).join(' ') + ' ' + message;
-  
+
+  // ── Check if user is providing contact details ────────────────────────────
+  const emailMatch = message.match(/[\w.-]+@[\w.-]+\.\w+/);
+  const phoneMatch = message.match(/(\+?[\d\s\-()]{8,})/);
+  const isSkipping = /skip|no thanks|no need|don't|dont|later|pass/i.test(message);
+
+  if (isSkipping && !leadInfo?.email && !leadInfo?.phone) {
+    return {
+      message: `No worries at all! 😊 If you ever want to connect, here are our details below. Hope you find your perfect property! 🏠✨`,
+      language: 'en',
+      stage: 'contact_skipped',
+      properties: [],
+      quickReplies: ['Search Again 🔍', 'Different Budget 💰', 'Change Area 📍'],
+      contactCard: true,
+    };
+  }
+
+  // ── Detect property search intent ─────────────────────────────────────────
   const propertyKeywords = [
     'show','listing','properties','property','available','option','apartment','flat','villa',
     'studio','bedroom','bhk','unit','find','search','recommend','suggest','cheap','buy','rent',
@@ -48,11 +89,11 @@ export async function processWebMessage(
 
   if (hasPropertyIntent) {
     try {
-      const fakeLead = buildLeadFromContext(allText);
+      const fakeLead = buildLeadFromContext(allText, prefilled);
       const filters = extractFiltersFromContext(message, fakeLead);
-      let properties = await searchProperties(filters, 4);
+      let properties = await searchProperties(filters, 6);
       if (properties.length === 0) {
-        properties = await searchPropertiesBroad(filters, 4);
+        properties = await searchPropertiesBroad(filters, 6);
       }
       matchedProperties = properties;
       if (properties.length > 0) {
@@ -61,6 +102,24 @@ export async function processWebMessage(
     } catch (err) {
       console.error('Property search error:', err);
     }
+  }
+
+  // ── Check if we should ask for contact details ────────────────────────────
+  const hasShownProperties = history.some(h =>
+    h.role === 'assistant' && (h.content.includes('match') || h.content.includes('found') || h.content.includes('look'))
+  );
+  const hasContactInfo = leadInfo?.phone || leadInfo?.email;
+  const shouldAskContact = hasShownProperties && matchedProperties.length === 0 && !hasContactInfo && !isSkipping;
+
+  if (shouldAskContact && !hasPropertyIntent) {
+    return {
+      message: `To keep you updated on new listings that match your criteria, may I get your name and best contact number? 😊\n\n_(Tap Skip if you prefer to stay anonymous — totally fine!)_`,
+      language: 'en',
+      stage: 'ask_contact',
+      properties: [],
+      quickReplies: ['Skip ⏭', 'Sure! 😊'],
+      contactCard: false,
+    };
   }
 
   const systemPrompt = WEB_SYSTEM_PROMPT + enrichedContext;
@@ -77,17 +136,71 @@ export async function processWebMessage(
   });
 
   const rawMessage = (completion.choices[0].message.content || "I'm here to help! What are you looking for?").trim();
-
-  // Detect quick replies based on stage
-  const quickReplies = getQuickReplies(rawMessage, hasPropertyIntent);
+  const quickReplies = getQuickReplies(rawMessage, matchedProperties.length > 0);
 
   return {
     message: rawMessage,
     language: detectLanguage(rawMessage),
-    stage: hasPropertyIntent ? 'showing' : 'qualifying',
+    stage: matchedProperties.length > 0 ? 'showing' : 'qualifying',
     properties: matchedProperties,
     quickReplies,
+    contactCard: false,
   };
+}
+
+// ─── Handle first load with pre-filled params from WhatsApp ──────────────────
+async function handlePrefilledSearch(prefilled: PrefilledParams): Promise<WebChatResponse> {
+  try {
+    const fakeLead: Record<string, unknown> = {
+      intent: prefilled.intent,
+      property_type: prefilled.type,
+      preferred_areas: prefilled.area && prefilled.area !== 'Any' ? [prefilled.area] : [],
+      budget_max: prefilled.budget_max,
+      budget_min: prefilled.budget_min,
+    };
+
+    const searchContext = `${prefilled.intent || 'buy'} ${prefilled.type || ''} ${prefilled.area || ''} budget ${prefilled.budget_max || ''}`;
+    const filters = extractFiltersFromContext(searchContext, fakeLead);
+
+    let properties = await searchProperties(filters, 6);
+    if (properties.length === 0) {
+      properties = await searchPropertiesBroad(filters, 6);
+    }
+
+    const nameGreet = prefilled.name ? `, ${prefilled.name}` : '';
+    const intentWord = prefilled.intent === 'rent' ? 'rental' : 'properties';
+    const areaWord = prefilled.area && prefilled.area !== 'Any' ? ` in ${prefilled.area}` : ' in Dubai';
+
+    if (properties.length > 0) {
+      return {
+        message: `Welcome${nameGreet}! 🌟 Based on your search, I found *${properties.length} ${intentWord}*${areaWord} that match your criteria. Take a look below 👇`,
+        language: 'en',
+        stage: 'showing',
+        properties,
+        quickReplies: ['Book Viewing 📅', 'More Options 🔍', 'Mortgage Calc 💰', 'Different Area 📍'],
+        contactCard: false,
+      };
+    } else {
+      return {
+        message: `Welcome${nameGreet}! 👋 I couldn't find an exact match, but let me broaden the search a little for you. What's most important — area, budget, or property type?`,
+        language: 'en',
+        stage: 'qualifying',
+        properties: [],
+        quickReplies: ['Change Area 📍', 'Adjust Budget 💰', 'Different Type 🏠'],
+        contactCard: false,
+      };
+    }
+  } catch (err) {
+    console.error('Prefilled search error:', err);
+    return {
+      message: `Welcome! 👋 I'm Layla, your Dubai property expert. Tell me what you're looking for and I'll find the best options for you! 🏠`,
+      language: 'en',
+      stage: 'qualifying',
+      properties: [],
+      quickReplies: ['Buy 🔑', 'Rent 🏠', 'Invest 📈', 'Off-Plan 🏗'],
+      contactCard: false,
+    };
+  }
 }
 
 function getQuickReplies(msg: string, hasProperties: boolean): string[] {
@@ -105,18 +218,31 @@ function detectLanguage(text: string): string {
   return 'en';
 }
 
-function buildLeadFromContext(text: string): Record<string, unknown> {
+function buildLeadFromContext(text: string, prefilled?: PrefilledParams): Record<string, unknown> {
   const lead: Record<string, unknown> = {};
-  if (/\b(buy|purchase|buying|investment|invest)\b/i.test(text)) lead.intent = 'buy';
-  else if (/\b(rent|lease|rental|renting)\b/i.test(text)) lead.intent = 'rent';
-  const mMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:m|million)\b/i);
-  if (mMatch) lead.budget_max = parseFloat(mMatch[1]) * 1000000;
-  const kMatch = text.match(/(\d{3,4})\s*k\b/i);
-  if (kMatch && !mMatch) lead.budget_max = parseInt(kMatch[1]) * 1000;
-  const aedMatch = text.match(/(?:aed)\s*(\d[\d,]+)/i);
-  if (aedMatch) lead.budget_max = parseInt(aedMatch[1].replace(/,/g, ''));
-  const bedMatch = text.match(/(\d+)\s*(?:bed|br|bhk|bedroom)/i);
-  if (bedMatch) lead.bedrooms = bedMatch[1];
-  else if (/studio/i.test(text)) lead.bedrooms = 'studio';
+
+  // Use prefilled params first
+  if (prefilled?.intent) lead.intent = prefilled.intent;
+  if (prefilled?.type) lead.property_type = prefilled.type;
+  if (prefilled?.area && prefilled.area !== 'Any') lead.preferred_areas = [prefilled.area];
+  if (prefilled?.budget_max) lead.budget_max = prefilled.budget_max;
+  if (prefilled?.budget_min) lead.budget_min = prefilled.budget_min;
+
+  // Then parse from text
+  if (!lead.intent) {
+    if (/\b(buy|purchase|buying|investment|invest)\b/i.test(text)) lead.intent = 'buy';
+    else if (/\b(rent|lease|rental|renting)\b/i.test(text)) lead.intent = 'rent';
+  }
+  if (!lead.budget_max) {
+    const mMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:m|million)\b/i);
+    if (mMatch) lead.budget_max = parseFloat(mMatch[1]) * 1000000;
+    const kMatch = text.match(/(\d{3,4})\s*k\b/i);
+    if (kMatch && !mMatch) lead.budget_max = parseInt(kMatch[1]) * 1000;
+  }
+  if (!lead.property_type) {
+    const bedMatch = text.match(/(\d+)\s*(?:bed|br|bhk|bedroom)/i);
+    if (bedMatch) lead.property_type = bedMatch[1] + 'BR';
+    else if (/studio/i.test(text)) lead.property_type = 'Studio';
+  }
   return lead;
 }
