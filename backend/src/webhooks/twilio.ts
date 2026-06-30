@@ -30,23 +30,46 @@ twilioWebhookRouter.post('/', async (req: Request, res: Response) => {
 
     const { lead } = await leadService.findOrCreate(agencyId, from, contactName || undefined);
 
-    const conversation = await leadService.getOrCreateConversation(lead.id as string, agencyId);
+    // ── New session detection ─────────────────────────────────────────────────
+    // Detect if this is a new session: user sent a greeting OR last message was
+    // more than 30 minutes ago. If so, close old conversation, start fresh, and
+    // reset qualifying fields so the 5-question flow restarts from Q1.
+    const greetings = /^(hi|hello|hey|start|help|hola|مرحبا|سلام|bonjour|salut|ciao|hej)\b/i;
+    const isGreeting = greetings.test(incomingText.trim());
 
-    // ── Fresh session check: reset qualifying data if no prior messages ────────
-    // Must happen BEFORE saveMessage (webhook saves inbound msg first, so after
-    // save the count would be 1 and the "=== 0" check would never fire).
-    const priorMsgResult = await query(
-      `SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = $1`,
-      [conversation.id]
+    // Find last message time across ALL conversations for this lead
+    const lastMsgResult = await query(
+      `SELECT m.created_at FROM messages m
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE c.lead_id = $1
+       ORDER BY m.created_at DESC LIMIT 1`,
+      [lead.id]
     );
-    const priorMsgCount = parseInt(priorMsgResult.rows[0]?.cnt || '0', 10);
-    if (priorMsgCount === 0) {
+    const lastMsgTime = lastMsgResult.rows[0]?.created_at
+      ? new Date(lastMsgResult.rows[0].created_at)
+      : null;
+    const minutesSinceLast = lastMsgTime
+      ? (Date.now() - lastMsgTime.getTime()) / 60000
+      : 9999;
+
+    const isNewSession = isGreeting || minutesSinceLast > 30 || !lastMsgTime;
+
+    if (isNewSession) {
+      // Close all old active conversations for this lead
+      await query(
+        `UPDATE conversations SET status = 'closed' WHERE lead_id = $1 AND status IN ('active', 'ai_handling')`,
+        [lead.id]
+      );
+      // Reset qualifying fields
       await query(
         `UPDATE leads SET intent = NULL, property_type = NULL, preferred_areas = NULL,
          budget_min = NULL, budget_max = NULL, timeline = NULL WHERE id = $1`,
         [lead.id]
       );
     }
+
+    // Get or create conversation AFTER potential reset above
+    const conversation = await leadService.getOrCreateConversation(lead.id as string, agencyId);
 
     await leadService.saveMessage(conversation.id as string, 'inbound', incomingText, {
       senderType: 'lead',
