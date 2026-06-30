@@ -9,7 +9,8 @@ import { leadsRouter } from './routes/leads';
 import { analyticsRouter } from './routes/analytics';
 import { authRouter } from './routes/auth';
 import { pool } from './db';
-import { initDatabase } from './db/init';
+import { initDatabase, getDefaultAgencyId } from './db/init';
+import { seedProperties } from './db/seed-properties';
 
 const app = express();
 
@@ -42,6 +43,8 @@ app.get('/health', async (_req, res) => {
 async function bootstrap() {
   try {
     await initDatabase();
+    const agencyId = getDefaultAgencyId();
+    await seedProperties(agencyId);
   } catch (err) {
     console.error('❌ Database initialization failed:', err);
     process.exit(1);

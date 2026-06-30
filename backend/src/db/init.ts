@@ -143,16 +143,11 @@ export async function initDatabase(): Promise<void> {
       p25_rent DECIMAL(15,2),
       p75_rent DECIMAL(15,2),
       median_sale DECIMAL(15,2),
-      price_per_sqft DECIMAL(10,2),
-      gross_yield DECIMAL(5,2),
-      tx_count INTEGER DEFAULT 0,
       avg_price_sqft DECIMAL(10,2),
-      avg_sale_price DECIMAL(15,2),
-      avg_rent_annual DECIMAL(15,2),
-      transaction_count INTEGER,
-      data_source VARCHAR(30) DEFAULT 'static-benchmark',
-      data_date TIMESTAMP DEFAULT NOW(),
-      created_at TIMESTAMP DEFAULT NOW(),
+      transaction_count INTEGER DEFAULT 0,
+      data_source VARCHAR(50) DEFAULT 'dld',
+      fetched_at TIMESTAMPTZ DEFAULT NOW(),
+      expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '24 hours',
       UNIQUE(area, property_type, beds)
     )
   `);
@@ -160,51 +155,81 @@ export async function initDatabase(): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS notifications (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-      agent_id UUID REFERENCES agents(id) ON DELETE CASCADE,
+      agency_id UUID REFERENCES agencies(id) ON DELETE CASCADE,
+      agent_id UUID REFERENCES agents(id) ON DELETE SET NULL,
       lead_id UUID REFERENCES leads(id) ON DELETE SET NULL,
       type VARCHAR(50) NOT NULL,
-      message TEXT NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      message TEXT,
       is_read BOOLEAN DEFAULT false,
+      metadata JSONB DEFAULT '{}',
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
 
-  // Indexes (IF NOT EXISTS supported in PG 9.5+)
-  const indexes = [
-    `CREATE INDEX IF NOT EXISTS idx_leads_agency ON leads(agency_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)`,
-    `CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(score DESC)`,
-    `CREATE INDEX IF NOT EXISTS idx_leads_whatsapp ON leads(whatsapp_number)`,
-    `CREATE INDEX IF NOT EXISTS idx_conversations_lead ON conversations(lead_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)`,
-    `CREATE INDEX IF NOT EXISTS idx_dld_area ON dld_price_cache(area, property_type)`,
-    `CREATE INDEX IF NOT EXISTS idx_notifications_agent ON notifications(agent_id, is_read)`,
-    `CREATE INDEX IF NOT EXISTS idx_market_intel_area ON market_intel(area, beds)`,
-  ];
-  for (const idx of indexes) {
-    await pool.query(idx);
-  }
+  // Properties table — 60 Dubai listings
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS properties (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      agency_id UUID REFERENCES agencies(id) ON DELETE CASCADE,
+      ref_no VARCHAR(50) UNIQUE NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      area VARCHAR(100) NOT NULL,
+      community VARCHAR(100),
+      building VARCHAR(100),
+      property_type VARCHAR(50) NOT NULL,
+      listing_type VARCHAR(20) NOT NULL,
+      bedrooms VARCHAR(10) NOT NULL,
+      bathrooms INTEGER,
+      sqft INTEGER,
+      floor INTEGER,
+      total_floors INTEGER,
+      view VARCHAR(100),
+      price DECIMAL(15,2) NOT NULL,
+      price_per_sqft DECIMAL(10,2),
+      service_charge_per_sqft DECIMAL(10,2),
+      cheques_accepted INTEGER DEFAULT 4,
+      furnished VARCHAR(20) DEFAULT 'unfurnished',
+      amenities TEXT[],
+      photo_urls TEXT[],
+      days_on_market INTEGER DEFAULT 0,
+      is_golden_visa_eligible BOOLEAN DEFAULT false,
+      gross_yield DECIMAL(5,2),
+      is_off_plan BOOLEAN DEFAULT false,
+      developer VARCHAR(100),
+      payment_plan VARCHAR(255),
+      is_featured BOOLEAN DEFAULT false,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
 
-  // Seed default agency if none exists
-  const { rows } = await pool.query('SELECT id FROM agencies LIMIT 1');
-  if (rows.length === 0) {
-    const result = await pool.query(
-      `INSERT INTO agencies (name, whatsapp_number, subscription_tier, subscription_status)
-       VALUES ($1, $2, 'starter', 'trial') RETURNING id`,
-      ['Layla Dubai RE', '+15556596204']
-    );
-    defaultAgencyId = result.rows[0].id;
-    console.log(`✅ Seeded default agency: ${defaultAgencyId}`);
-  } else {
-    defaultAgencyId = rows[0].id;
-    console.log(`✅ Using existing agency: ${defaultAgencyId}`);
-  }
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_properties_area ON properties(area)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_properties_listing_type ON properties(listing_type)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_properties_bedrooms ON properties(bedrooms)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_properties_price ON properties(price)`);
 
-  console.log('✅ Database ready');
+  // Seed agency
+  const agencyResult = await pool.query(`
+    INSERT INTO agencies (name, whatsapp_number, subscription_tier, subscription_status)
+    VALUES ('Dubai RE Agency', '+971501234567', 'professional', 'active')
+    ON CONFLICT (whatsapp_number) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id
+  `);
+  defaultAgencyId = agencyResult.rows[0].id;
+
+  await pool.query(`
+    INSERT INTO agents (agency_id, name, email, password_hash, role)
+    VALUES ($1, 'Vijay Admin', 'vijay@dubaiagency.com',
+      '$2b$10$rMDp7MBFRfzh5XrJbGvmCONf7HzL3qE1YqQgP5vX8wKDnUhJkLT1u', 'admin')
+    ON CONFLICT (email) DO NOTHING
+  `, [defaultAgencyId]);
+
+  console.log('✅ Database schema initialized');
 }
 
 export function getDefaultAgencyId(): string {
-  if (!defaultAgencyId) throw new Error('Database not initialized — call initDatabase() first');
+  if (!defaultAgencyId) throw new Error('Database not initialized');
   return defaultAgencyId;
 }
