@@ -15,6 +15,12 @@ export const config = {
   whatsappWebhookToken: process.env.WHATSAPP_VERIFY_TOKEN || 'layla2024',
   whatsappBaseUrl: 'https://graph.facebook.com/v19.0',
 
+  // Twilio WhatsApp
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || '',
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || '',
+  twilioWhatsappNumber: process.env.TWILIO_WHATSAPP_NUMBER || '',
+  useTwilio: process.env.USE_TWILIO === 'true',
+
   // Database
   databaseUrl: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/wabroker',
 
@@ -30,6 +36,6 @@ export const config = {
   dashboardUrl: process.env.DASHBOARD_URL || 'http://localhost:5173',
 
   // Business
-  agentHandoffThreshold: 80, // Lead score above this → notify agent
+  agentHandoffThreshold: 80,
   sessionTimeoutMinutes: 60,
 };
