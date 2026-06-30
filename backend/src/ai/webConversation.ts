@@ -15,15 +15,18 @@ export interface WebChatResponse {
   language: string;
   stage: string;
   properties: Property[];
+  quickReplies?: string[];
 }
 
 const WEB_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
-## WEB CHAT MODE — IMPORTANT
-You are in web chat mode. The frontend renders beautiful visual property cards automatically from the API data — you do NOT need to format property listings as text.
-When properties are found, write a SHORT, warm message like: "I found 3 perfect matches for you! ✨ Take a look 👇" — the cards appear automatically below your message.
-Keep ALL your messages SHORT (2-4 sentences max). Be punchy, warm, conversational.
-No long formatted text blocks. The UI handles the visual display.
+## WEB CHAT MODE — CRITICAL RULES
+You are in web chat mode. The frontend renders beautiful visual property cards automatically.
+- NEVER list properties as text. NEVER write "AED X/year", sqft, floors, amenities in your message.
+- When properties are found, write ONLY a short warm message like: "I found 3 perfect matches for you! ✨ Take a look 👇"
+- Keep ALL messages to 1-3 sentences max. Punchy, warm, conversational.
+- DO NOT format property details in text. The UI handles all visual display.
+- Respond in plain text only — no JSON, no markdown lists.
 `;
 
 export async function processWebMessage(
@@ -47,13 +50,13 @@ export async function processWebMessage(
     try {
       const fakeLead = buildLeadFromContext(allText);
       const filters = extractFiltersFromContext(message, fakeLead);
-      let properties = await searchProperties(filters, 3);
+      let properties = await searchProperties(filters, 4);
       if (properties.length === 0) {
-        properties = await searchPropertiesBroad(filters, 3);
+        properties = await searchPropertiesBroad(filters, 4);
       }
       matchedProperties = properties;
       if (properties.length > 0) {
-        enrichedContext = `\n\n${formatPropertiesForAI(properties)}`;
+        enrichedContext = `\n\n[PROPERTY DATA FOR CONTEXT ONLY — DO NOT LIST IN YOUR MESSAGE]\n${formatPropertiesForAI(properties)}\n[END PROPERTY DATA]`;
       }
     } catch (err) {
       console.error('Property search error:', err);
@@ -69,24 +72,37 @@ export async function processWebMessage(
       ...history.slice(-8),
       { role: 'user', content: message },
     ],
-    response_format: { type: 'json_object' },
     temperature: 0.7,
-    max_tokens: 350,
+    max_tokens: 200,
   });
 
-  const rawResponse = completion.choices[0].message.content || '{}';
+  const rawMessage = (completion.choices[0].message.content || "I'm here to help! What are you looking for?").trim();
 
-  try {
-    const parsed = JSON.parse(rawResponse);
-    return {
-      message: parsed.message || "I'm here to help! What are you looking for?",
-      language: parsed.language || 'en',
-      stage: parsed.stage || 'greeting',
-      properties: matchedProperties,
-    };
-  } catch {
-    return { message: rawResponse, language: 'en', stage: 'greeting', properties: [] };
-  }
+  // Detect quick replies based on stage
+  const quickReplies = getQuickReplies(rawMessage, hasPropertyIntent);
+
+  return {
+    message: rawMessage,
+    language: detectLanguage(rawMessage),
+    stage: hasPropertyIntent ? 'showing' : 'qualifying',
+    properties: matchedProperties,
+    quickReplies,
+  };
+}
+
+function getQuickReplies(msg: string, hasProperties: boolean): string[] {
+  if (hasProperties) return ['Book Viewing 📅', 'More Options 🔍', 'Mortgage Calc 💰', 'Different Area 📍'];
+  const lower = msg.toLowerCase();
+  if (lower.includes('budget') || lower.includes('afford')) return ['Under AED 1M 💰', '1–2M 🏠', '2–5M 🏢', '5M+ 👑'];
+  if (lower.includes('area') || lower.includes('where') || lower.includes('location')) return ['Downtown 🌆', 'Marina 🌊', 'JVC 🏘', 'Palm 🌴', 'Business Bay'];
+  if (lower.includes('buy') || lower.includes('rent')) return ['Buy 🔑', 'Rent 🏠', 'Invest 📈', 'Off-Plan 🏗'];
+  return ['Buy 🔑', 'Rent 🏠', 'Invest 📈', 'Off-Plan 🏗', 'Golden Visa 🏅'];
+}
+
+function detectLanguage(text: string): string {
+  if (/[\u0600-\u06FF]/.test(text)) return 'ar';
+  if (/[\u0400-\u04FF]/.test(text)) return 'ru';
+  return 'en';
 }
 
 function buildLeadFromContext(text: string): Record<string, unknown> {
