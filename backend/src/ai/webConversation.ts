@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { config } from '../config';
 import { SYSTEM_PROMPT } from './prompts';
-import { searchProperties, searchPropertiesBroad, extractFiltersFromContext, formatPropertiesForAI } from '../services/propertyService';
+import { searchProperties, searchPropertiesBroad, extractFiltersFromContext, formatPropertiesForAI, Property } from '../services/propertyService';
 
 const openai = new OpenAI({ apiKey: config.openaiApiKey });
 
@@ -10,41 +10,11 @@ export interface WebChatMessage {
   content: string;
 }
 
-export interface PropertyResult {
-  id: string;
-  ref_no: string;
-  title: string;
-  area: string;
-  community: string | null;
-  building: string | null;
-  property_type: string;
-  listing_type: string;
-  bedrooms: string;
-  bathrooms: number;
-  sqft: number;
-  floor: number | null;
-  total_floors: number | null;
-  view: string | null;
-  price: number;
-  price_per_sqft: number;
-  cheques_accepted: number;
-  furnished: string;
-  amenities: string[];
-  photo_urls: string[];
-  days_on_market: number;
-  is_golden_visa_eligible: boolean;
-  gross_yield: number | null;
-  is_off_plan: boolean;
-  developer: string | null;
-  payment_plan: string | null;
-  is_featured: boolean;
-}
-
 export interface WebChatResponse {
   message: string;
   language: string;
   stage: string;
-  properties: PropertyResult[];
+  properties: Property[];
 }
 
 const WEB_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
@@ -70,7 +40,7 @@ export async function processWebMessage(
   ];
   const hasPropertyIntent = propertyKeywords.some(kw => allText.toLowerCase().includes(kw));
 
-  let matchedProperties: PropertyResult[] = [];
+  let matchedProperties: Property[] = [];
   let enrichedContext = '';
 
   if (hasPropertyIntent) {
@@ -81,7 +51,7 @@ export async function processWebMessage(
       if (properties.length === 0) {
         properties = await searchPropertiesBroad(filters, 3);
       }
-      matchedProperties = properties as PropertyResult[];
+      matchedProperties = properties;
       if (properties.length > 0) {
         enrichedContext = `\n\n${formatPropertiesForAI(properties)}`;
       }

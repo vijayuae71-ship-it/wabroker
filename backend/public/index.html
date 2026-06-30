@@ -334,31 +334,31 @@ function buildCard(p, idx) {
   card.className = 'prop-card';
   card.style.animationDelay = `${idx * 0.1}s`;
 
-  const photo = p.photo_urls && p.photo_urls[0] ? p.photo_urls[0] : 'https://images.unsplash.com/photo-1486325212027-8081e485255e?w=800&q=80';
-  const isSale = p.listing_type === 'sale';
+  const photo = p.photoUrls && p.photoUrls[0] ? p.photoUrls[0] : 'https://images.unsplash.com/photo-1486325212027-8081e485255e?w=800&q=80';
+  const isSale = p.listingType === 'sale';
   const priceStr = isSale ? 'AED ' + fmt(p.price) : 'AED ' + fmt(p.price) + '/yr';
-  const sqftPrice = p.price_per_sqft ? ` · AED ${fmt(Math.round(p.price_per_sqft))}/sqft` : '';
+  const sqftPrice = p.pricePerSqft ? ` · AED ${fmt(Math.round(p.pricePerSqft))}/sqft` : '';
   const beds = p.bedrooms === 'studio' ? 'Studio' : p.bedrooms + ' BR';
-  const floor = p.floor ? `Floor ${p.floor}${p.total_floors ? '/' + p.total_floors : ''}` : '';
+  const floor = p.floor ? `Floor ${p.floor}${p.totalFloors ? '/' + p.totalFloors : ''}` : '';
   const amenities = (p.amenities || []).slice(0, 3);
-  const isHot = p.days_on_market > 45;
-  const isNew = p.days_on_market <= 5;
-  const canNegotiate = p.days_on_market > 30;
-  const yieldStr = p.gross_yield ? `${p.gross_yield}% yield` : '';
+  const isHot = p.daysOnMarket > 45;
+  const isNew = p.daysOnMarket <= 5;
+  const canNegotiate = p.daysOnMarket > 30;
+  const yieldStr = p.grossYield ? `${p.grossYield}% yield` : '';
 
   let badges = '';
   if (p.is_featured) badges += `<span class="badge badge-featured">⭐ Featured</span>`;
-  if (p.is_off_plan) badges += `<span class="badge badge-offplan">🏗️ Off-Plan</span>`;
-  if (p.is_golden_visa_eligible && isSale) badges += `<span class="badge badge-visa">🏆 Golden Visa</span>`;
+  if (p.isOffPlan) badges += `<span class="badge badge-offplan">🏗️ Off-Plan</span>`;
+  if (p.isGoldenVisaEligible && isSale) badges += `<span class="badge badge-visa">🏆 Golden Visa</span>`;
   if (isNew) badges += `<span class="badge badge-new">🆕 Just Listed</span>`;
-  if (isHot && !isNew) badges += `<span class="badge badge-hot">🔥 ${p.days_on_market}d Listed</span>`;
+  if (isHot && !isNew) badges += `<span class="badge badge-hot">🔥 ${p.daysOnMarket}d Listed</span>`;
   if (yieldStr && isSale) badges += `<span class="badge badge-yield">📈 ${yieldStr}</span>`;
 
-  const negotiateHtml = canNegotiate && isSale ? `<div class="negotiate-tag">⚡ On market ${p.days_on_market} days — motivated seller, room to negotiate!</div>` : '';
+  const negotiateHtml = canNegotiate && isSale ? `<div class="negotiate-tag">⚡ On market ${p.daysOnMarket} days — motivated seller, room to negotiate!</div>` : '';
   const amenityHtml = amenities.map(a => `<span class="amenity">${a}</span>`).join('');
-  const chequeInfo = p.cheques_accepted > 1 ? `${p.cheques_accepted} cheques` : '1 cheque';
+  const chequeInfo = p.chequesAccepted > 1 ? `${p.chequesAccepted} cheques` : '1 cheque';
   const viewInfo = p.view ? ` · ${p.view}` : '';
-  const offplanHtml = p.is_off_plan && p.payment_plan ? `<div style="background:#EFF6FF;border-radius:8px;padding:6px 10px;font-size:11px;color:#1e40af;margin-bottom:8px">🏗️ ${p.developer || ''} · ${p.payment_plan}</div>` : '';
+  const offplanHtml = p.isOffPlan && p.paymentPlan ? `<div style="background:#EFF6FF;border-radius:8px;padding:6px 10px;font-size:11px;color:#1e40af;margin-bottom:8px">🏗️ ${p.developer || ''} · ${p.paymentPlan}</div>` : '';
 
   card.innerHTML = `
     <div class="card-img">
@@ -384,7 +384,7 @@ function buildCard(p, idx) {
       ${floor ? `<div style="font-size:11px;color:#888;margin-bottom:8px">🏢 ${floor}</div>` : ''}
       <div class="card-footer">
         <button class="btn-book" onclick="openBooking(${JSON.stringify(p).replace(/"/g,'&quot;')})">📅 Book Viewing</button>
-        ${isSale ? `<button class="btn-calc" onclick="openCalc(${JSON.stringify(p).replace(/"/g,'&quot;')})">🧮 Mortgage</button>` : `<button class="btn-calc" onclick="sendMessage('Tell me more about ${p.ref_no}')">ℹ️ More Info</button>`}
+        ${isSale ? `<button class="btn-calc" onclick="openCalc(${JSON.stringify(p).replace(/"/g,'&quot;')})">🧮 Mortgage</button>` : `<button class="btn-calc" onclick="sendMessage('Tell me more about ${p.refNo}')">ℹ️ More Info</button>`}
       </div>
     </div>`;
 
@@ -410,7 +410,7 @@ async function submitBooking() {
     await fetch(BOOK_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, phone, propertyTitle: currentBooking?.title, propertyRef: currentBooking?.ref_no, date, time })
+      body: JSON.stringify({ name, phone, propertyTitle: currentBooking?.title, propertyRef: currentBooking?.refNo, date, time })
     });
   } catch {}
 
