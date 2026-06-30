@@ -183,7 +183,7 @@ export async function processMessage(
   // ── Fresh conversation check: if no prior messages, reset qualifying data ──
   // This prevents stale DB data from skipping questions on a new chat session
   const msgCountResult = await query(
-    `SELECT COUNT(*) as cnt FROM conversation_messages WHERE conversation_id = $1`,
+    `SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = $1`,
     [conversationId]
   );
   const priorMessageCount = parseInt(msgCountResult.rows[0]?.cnt || '0', 10);
