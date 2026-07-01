@@ -68,6 +68,38 @@ export async function searchPropertiesBroad(filters: PropertyFilter, limit = 3):
   return searchProperties({ ...filters, area: undefined, maxPrice: undefined }, limit);
 }
 
+/**
+ * Maps the lead's property_type field (stored as conversation-stage values like '1BR', '2BR',
+ * 'Studio', 'Villa', 'Townhouse', 'Penthouse') into proper DB filter fields.
+ * The DB stores property_type as 'apartment', 'villa', 'townhouse', 'studio' and
+ * bedrooms as '1', '2', '3', '4', 'studio'.
+ */
+function applyLeadPropertyType(pt: string, filters: PropertyFilter): void {
+  const normalized = pt.trim();
+  if (/^studio$/i.test(normalized)) {
+    filters.bedrooms = 'studio';
+    // Don't restrict property_type — studio can be property_type='studio' or 'apartment'
+  } else if (/^1\s*b(r|hk)$/i.test(normalized) || normalized === '1BR') {
+    filters.bedrooms = '1';
+    filters.propertyType = 'apartment';
+  } else if (/^2\s*b(r|hk)$/i.test(normalized) || normalized === '2BR') {
+    filters.bedrooms = '2';
+    filters.propertyType = 'apartment';
+  } else if (/^3\s*b(r|hk)$/i.test(normalized) || normalized === '3BR') {
+    filters.bedrooms = '3';
+    filters.propertyType = 'apartment';
+  } else if (/^4\s*b(r|hk)$/i.test(normalized) || normalized === '4BR') {
+    filters.bedrooms = '4';
+  } else if (/villa/i.test(normalized)) {
+    filters.propertyType = 'villa';
+  } else if (/townhouse/i.test(normalized)) {
+    filters.propertyType = 'townhouse';
+  } else if (/penthouse/i.test(normalized)) {
+    filters.propertyType = 'apartment';
+  }
+  // If none matched, don't set any filter (avoid wrong ILIKE '%1BR%' on DB)
+}
+
 export function extractFiltersFromContext(
   message: string,
   lead: Record<string, unknown>
@@ -79,13 +111,25 @@ export function extractFiltersFromContext(
   if (/\bbuy|\bsale|\bpurchase|\binvest/i.test(msg) || lead?.intent === 'buy' || lead?.intent === 'invest') filters.listingType = 'sale';
   else if (/\brent|\blease/i.test(msg) || lead?.intent === 'rent') filters.listingType = 'rent';
 
-  // Bedrooms
-  if (/studio/i.test(msg)) filters.bedrooms = 'studio';
-  else if (/\b1\s*b(r|hk|ed)|one\s*bed/i.test(msg)) filters.bedrooms = '1';
-  else if (/\b2\s*b(r|hk|ed)|two\s*bed/i.test(msg)) filters.bedrooms = '2';
-  else if (/\b3\s*b(r|hk|ed)|three\s*bed/i.test(msg)) filters.bedrooms = '3';
-  else if (/\b4\s*b(r|hk|ed)|four\s*bed/i.test(msg)) filters.bedrooms = '4';
-  else if (lead?.bedrooms) filters.bedrooms = lead.bedrooms as string;
+  // Bedrooms — from message first, then from lead.property_type mapping
+  let bedroomsFromMsg = false;
+  if (/studio/i.test(msg)) { filters.bedrooms = 'studio'; bedroomsFromMsg = true; }
+  else if (/\b1\s*b(r|hk|ed)|one\s*bed/i.test(msg)) { filters.bedrooms = '1'; bedroomsFromMsg = true; }
+  else if (/\b2\s*b(r|hk|ed)|two\s*bed/i.test(msg)) { filters.bedrooms = '2'; bedroomsFromMsg = true; }
+  else if (/\b3\s*b(r|hk|ed)|three\s*bed/i.test(msg)) { filters.bedrooms = '3'; bedroomsFromMsg = true; }
+  else if (/\b4\s*b(r|hk|ed)|four\s*bed/i.test(msg)) { filters.bedrooms = '4'; bedroomsFromMsg = true; }
+
+  // Property type — from message first
+  let typeFromMsg = false;
+  if (/villa/i.test(msg)) { filters.propertyType = 'villa'; typeFromMsg = true; }
+  else if (/townhouse/i.test(msg)) { filters.propertyType = 'townhouse'; typeFromMsg = true; }
+  else if (/penthouse/i.test(msg)) { filters.propertyType = 'apartment'; typeFromMsg = true; }
+  else if (/studio/i.test(msg)) { filters.propertyType = 'studio'; typeFromMsg = true; }
+
+  // Fall back to lead.property_type — maps '1BR', '2BR', 'Studio', 'Villa', etc. correctly
+  if ((!bedroomsFromMsg || !typeFromMsg) && lead?.property_type) {
+    applyLeadPropertyType(lead.property_type as string, filters);
+  }
 
   // Area
   const areaMap: Record<string, string> = {
@@ -107,12 +151,6 @@ export function extractFiltersFromContext(
   // Budget
   if (lead?.budget_max) filters.maxPrice = parseFloat(String(lead.budget_max));
   if (lead?.budget_min) filters.minPrice = parseFloat(String(lead.budget_min));
-
-  // Property type
-  if (/villa/i.test(msg)) filters.propertyType = 'villa';
-  else if (/townhouse/i.test(msg)) filters.propertyType = 'townhouse';
-  else if (/studio/i.test(msg)) filters.propertyType = 'studio';
-  else if (lead?.property_type) filters.propertyType = lead.property_type as string;
 
   // Golden Visa
   if (/golden visa/i.test(msg)) filters.isGoldenVisaEligible = true;
