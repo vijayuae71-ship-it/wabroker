@@ -26,6 +26,7 @@ function getQualifyingStage(lead: Record<string, unknown>): string {
   if (!lead.intent) return 'ask_intent';
   if (!lead.property_type) return 'ask_type';
   if (!lead.preferred_areas || (lead.preferred_areas as string[]).length === 0) return 'ask_area';
+  if ((lead.preferred_areas as string[])[0] === '__CUSTOM__') return 'ask_area_custom';
   if (!lead.budget_max) return 'ask_budget';
   if (!lead.timeline) return 'ask_timeline';
   return 'qualified'; // All done → send link
@@ -60,7 +61,12 @@ Reply with:
 4️⃣ Business Bay
 5️⃣ JVC / JVT
 6️⃣ Dubai Hills
-7️⃣ Any area (show me the best options)`,
+7️⃣ My area isn't listed — I'll type it
+8️⃣ Anywhere in Dubai`,
+
+  ask_area_custom: `No problem! 📍 Which area are you looking in?
+
+Just type the name (e.g. DIFC, Creek Harbour, Jumeirah, Meydan, Motor City…) and I'll find the best matches.`,
 
   ask_budget: `And what's your budget range?
 
@@ -107,7 +113,8 @@ function parseAreaReply(text: string): string | null {
   if (/^4$|business bay|bay/.test(t)) return 'Business Bay';
   if (/^5$|jvc|jvt/.test(t)) return 'JVC';
   if (/^6$|hills|dubai hills/.test(t)) return 'Dubai Hills';
-  if (/^7$|any/.test(t)) return 'Any';
+  if (/^7$/.test(t)) return '__CUSTOM__'; // user wants to type their own area
+  if (/^8$|any/.test(t)) return 'Any';
   return null;
 }
 
@@ -252,7 +259,41 @@ export async function processMessage(
           stage: 'ask_area',
         };
       }
+      if (area === '__CUSTOM__') {
+        // User wants to type their own area — set marker, ask for freeform
+        leadUpdates.preferred_areas = ['__CUSTOM__'];
+        return {
+          message: STAGE_QUESTIONS.ask_area_custom,
+          language: 'en',
+          leadUpdates,
+          handoffRequired: false,
+          handoffReason: null,
+          stage: 'ask_area_custom',
+        };
+      }
       leadUpdates.preferred_areas = area === 'Any' ? [] : [area];
+      nextQuestion = lead.intent === 'rent'
+        ? `What's your monthly/yearly rent budget?\n\nReply with:\n1️⃣ Under AED 50K/year\n2️⃣ AED 50K–100K/year\n3️⃣ AED 100K–150K/year\n4️⃣ AED 150K–200K/year\n5️⃣ AED 200K+/year`
+        : STAGE_QUESTIONS.ask_budget;
+      break;
+    }
+
+    case 'ask_area_custom': {
+      // User typed a freeform area name — save it and move on
+      const customArea = userText.trim();
+      if (!customArea || customArea.length < 2) {
+        return {
+          message: STAGE_QUESTIONS.ask_area_custom,
+          language: 'en',
+          leadUpdates: {},
+          handoffRequired: false,
+          handoffReason: null,
+          stage: 'ask_area_custom',
+        };
+      }
+      // Capitalise first letter of each word
+      const formatted = customArea.replace(/\b\w/g, c => c.toUpperCase());
+      leadUpdates.preferred_areas = [formatted];
       nextQuestion = lead.intent === 'rent'
         ? `What's your monthly/yearly rent budget?\n\nReply with:\n1️⃣ Under AED 50K/year\n2️⃣ AED 50K–100K/year\n3️⃣ AED 100K–150K/year\n4️⃣ AED 150K–200K/year\n5️⃣ AED 200K+/year`
         : STAGE_QUESTIONS.ask_budget;
