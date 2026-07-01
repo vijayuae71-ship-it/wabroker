@@ -249,6 +249,38 @@ let currentBooking = null;
 let calcPrice = 0;
 let prefilledParams = null;
 let leadInfo = { name: null, phone: null, email: null };
+let webLeadId = null;   // set by server (DB lead ID)
+let sessionId = null;   // browser-generated UUID for anonymous sessions
+
+// ── Session persistence helpers ──
+function saveSession() {
+  try {
+    sessionStorage.setItem('layla_history', JSON.stringify(history));
+    sessionStorage.setItem('layla_lead_id', webLeadId || '');
+    sessionStorage.setItem('layla_lead_info', JSON.stringify(leadInfo));
+  } catch(e) {}
+}
+function loadSession() {
+  try {
+    const h = sessionStorage.getItem('layla_history');
+    if (h) history = JSON.parse(h);
+    const lid = sessionStorage.getItem('layla_lead_id');
+    if (lid) webLeadId = lid;
+    const li = sessionStorage.getItem('layla_lead_info');
+    if (li) leadInfo = JSON.parse(li);
+  } catch(e) {}
+}
+function clearSession() {
+  try { sessionStorage.removeItem('layla_history'); sessionStorage.removeItem('layla_lead_id'); sessionStorage.removeItem('layla_lead_info'); } catch(e) {}
+}
+function getOrCreateSessionId() {
+  let sid = sessionStorage.getItem('layla_session_id');
+  if (!sid) {
+    sid = 'web_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    sessionStorage.setItem('layla_session_id', sid);
+  }
+  return sid;
+}
 
 // ── CONTACT DETAILS (edit these when ready) ──
 const CONTACT = {
@@ -265,6 +297,8 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('b-date').value = tomorrow.toISOString().split('T')[0];
   autoResize();
 
+  sessionId = getOrCreateSessionId();
+
   // Read URL params (set by WhatsApp qualifying flow)
   const urlParams = new URLSearchParams(window.location.search);
   const intent = urlParams.get('intent');
@@ -274,11 +308,21 @@ window.addEventListener('DOMContentLoaded', () => {
   const budget_min = urlParams.get('budget_min');
   const timeline = urlParams.get('timeline');
   const name = urlParams.get('name');
+  const leadIdParam = urlParams.get('leadId');  // WhatsApp lead ID hand-off
+
+  if (leadIdParam) {
+    // Fresh link from WhatsApp — clear any old session, use the new leadId
+    clearSession();
+    webLeadId = leadIdParam;
+  } else {
+    // Returning visitor — restore previous session
+    loadSession();
+  }
 
   if (name) leadInfo.name = name;
 
   if (intent || type || area || budget_max) {
-    // Came from WhatsApp — pre-filled search
+    // Came from WhatsApp — pre-filled search (always fresh)
     prefilledParams = {
       intent: intent || undefined,
       type: type || undefined,
@@ -297,24 +341,35 @@ window.addEventListener('DOMContentLoaded', () => {
     fetch(API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: '__prefilled__', history: [], prefilled: prefilledParams, leadInfo })
+      body: JSON.stringify({ message: '__prefilled__', history: [], prefilled: prefilledParams, leadInfo, leadId: webLeadId, sessionId })
     })
     .then(r => r.json())
     .then(data => {
       hideTyping();
+      if (data.leadId) webLeadId = data.leadId;
       const reply = data.message || "I found some great options for you! Take a look 👇";
       history.push({ role: 'assistant', content: reply });
       addMsg('layla', reply, data.properties || []);
       if (data.quickReplies && data.quickReplies.length) addInlineQuickReplies(data.quickReplies);
       if (data.contactCard) addContactCard();
+      saveSession();
     })
     .catch(() => {
       hideTyping();
       addMsg('layla', "Hey there! 👋 I'm Layla — your Dubai property expert. What are you looking for today?");
     });
 
+  } else if (history.length > 0) {
+    // Returning visitor with saved session — restore chat visually
+    const chat = document.getElementById('chat');
+    history.forEach(msg => {
+      if (msg.role === 'user') addMsg('user', msg.content);
+      else addMsg('layla', msg.content);
+    });
+    addMsg('layla', `Welcome back! 👋 Want to continue where we left off, or shall we start a fresh search?`);
+
   } else {
-    // Normal entry — show greeting
+    // Fresh direct visit — show greeting
     setTimeout(() => {
       addMsg('layla', "Hey there! 👋 I'm **Layla** — your personal Dubai property expert.\n\nI've helped hundreds of clients find their perfect home here, from JVC studios to Palm villas. Tell me what you're looking for and I'll find you something amazing! 🏙️");
     }, 300);
@@ -355,10 +410,13 @@ async function sendMessage(text) {
         history: history.slice(-12),
         prefilled: prefilledParams || undefined,
         leadInfo: (leadInfo.name || leadInfo.phone || leadInfo.email) ? leadInfo : undefined,
+        leadId: webLeadId || undefined,
+        sessionId: sessionId || undefined,
       })
     });
     const data = await res.json();
     hideTyping();
+    if (data.leadId) webLeadId = data.leadId;
     const reply = data.message || "I'm here to help — tell me what you're looking for!";
     history.push({ role: 'assistant', content: reply });
     addMsg('layla', reply, data.properties || []);
@@ -366,6 +424,7 @@ async function sendMessage(text) {
       addInlineQuickReplies(data.quickReplies);
     }
     if (data.contactCard) addContactCard();
+    saveSession();
   } catch (err) {
     hideTyping();
     addMsg('layla', "Oops, I had a moment there! 🙈 Please try again.");

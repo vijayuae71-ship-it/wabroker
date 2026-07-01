@@ -170,6 +170,7 @@ function buildWebChatUrl(lead: Record<string, unknown>): string {
   if (lead.budget_min) params.set('budget_min', String(lead.budget_min));
   if (lead.timeline) params.set('timeline', lead.timeline as string);
   if (lead.name) params.set('name', lead.name as string);
+  if (lead.id) params.set('leadId', lead.id as string);
   return `${WEB_CHAT_URL}?${params.toString()}`;
 }
 
