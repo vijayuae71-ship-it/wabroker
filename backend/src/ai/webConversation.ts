@@ -94,20 +94,28 @@ export async function processWebMessage(
       const fakeLead = buildLeadFromContext(allText, prefilled);
       const filters = extractFiltersFromContext(message, fakeLead);
       let properties = await searchProperties(filters, 6);
-      if (properties.length === 0) {
+      // STRICT AREA RULE: if user asked for a specific area and DB has no match,
+      // NEVER fall back to other areas — that destroys authenticity.
+      // Only use broad fallback (drops area) when NO area was specified.
+      if (properties.length === 0 && !filters.area) {
         properties = await searchPropertiesBroad(filters, 6);
       }
       matchedProperties = properties;
       if (properties.length > 0) {
         enrichedContext = `\n\n[PROPERTY DATA FOR CONTEXT ONLY — DO NOT LIST IN YOUR MESSAGE]\n${formatPropertiesForAI(properties)}\n[END PROPERTY DATA]`;
       } else if (filters.area) {
-        // DB had no match — try live market scrape from PropertyFinder
+        // DB had no match for this area — try live market scrape from PropertyFinder
         const listingType = filters.listingType || (fakeLead.intent === 'rent' ? 'rent' : 'sale');
         const bedrooms = filters.bedrooms || (fakeLead.bedrooms as string) || 'studio';
         const liveData = await getLiveMarketData(filters.area, bedrooms, listingType as 'sale' | 'rent');
         if (liveData) {
           enrichedContext = `\n\n[LIVE MARKET DATA FROM PROPERTYFINDER — USE THIS]\n${formatLiveMarketMessage(liveData)}\n[END LIVE DATA]`;
+        } else {
+          enrichedContext = `\n\n[AREA NOT IN DB]\nUser asked for ${filters.area}. We don't have listings there yet. Tell the user honestly we don't have ${filters.area} listings in our current portfolio, and offer to help them with nearby alternatives OR note it and follow up. Do NOT invent listings or show properties from other areas.\n[END]`;
         }
+      } else {
+        // No area specified, no results — broad search also returned nothing
+        enrichedContext = `\n\n[NO RESULTS]\nNo properties match these exact criteria. Suggest adjusting budget or property type. Do NOT show listings from unrelated areas.\n[END]`;
       }
     } catch (err) {
       console.error('Property search error:', err);
@@ -174,7 +182,8 @@ async function handlePrefilledSearch(prefilled: PrefilledParams): Promise<WebCha
     const filters = extractFiltersFromContext(searchContext, fakeLead);
 
     let properties = await searchProperties(filters, 6);
-    if (properties.length === 0) {
+    // STRICT AREA RULE: never drop area filter to fill results with wrong-area properties
+    if (properties.length === 0 && !filters.area) {
       properties = await searchPropertiesBroad(filters, 6);
     }
 
