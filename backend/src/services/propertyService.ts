@@ -131,6 +131,12 @@ export function extractFiltersFromContext(
     applyLeadPropertyType(lead.property_type as string, filters);
   }
 
+  // ── STRICT BEDROOM GUARD: if lead has a direct bedrooms value (from qualifying flow),
+  //    always use it — never let a partial property_type match override it.
+  if (lead?.bedrooms && !bedroomsFromMsg) {
+    filters.bedrooms = lead.bedrooms as string;
+  }
+
   // Area
   const areaMap: Record<string, string> = {
     'marina': 'Dubai Marina', 'downtown': 'Downtown Dubai', 'jvc': 'JVC',
@@ -140,6 +146,22 @@ export function extractFiltersFromContext(
     'damac': 'Damac Hills', 'difc': 'DIFC', 'bluewaters': 'Bluewaters Island',
     'creek': 'Creek Harbour', 'sobha': 'MBR City', 'jumeirah': 'Jumeirah',
     'furjan': 'Al Furjan', 'town square': 'Town Square', 'sports city': 'Dubai Sports City',
+    // Additional areas
+    'ritaj': 'Ritaj', 'international city': 'International City', 'dic': 'International City',
+    'motor city': 'Motor City', 'arjan': 'Arjan', 'dubailand': 'Dubailand',
+    'remraam': 'Remraam', 'discovery gardens': 'Discovery Gardens', 'dg': 'Discovery Gardens',
+    'meadows': 'The Meadows', 'springs': 'The Springs', 'lakes': 'The Lakes',
+    'mudon': 'Mudon', 'serena': 'Serena', 'villanova': 'Villanova',
+    'greens': 'The Greens', 'views': 'The Views', 'jlt': 'JLT',
+    'jumeirah lake towers': 'JLT', 'al quoz': 'Al Quoz',
+    'bur dubai': 'Bur Dubai', 'karama': 'Al Karama', 'satwa': 'Al Satwa',
+    'rashidiya': 'Al Rashidiya', 'nahda': 'Al Nahda', 'qusais': 'Al Qusais',
+    'warqaa': 'Al Warqaa', 'mizhar': 'Al Mizhar', 'khawaneej': 'Al Khawaneej',
+    'mamzar': 'Al Mamzar', 'twar': 'Al Twar', 'barsha heights': 'Barsha Heights',
+    'tecom': 'Barsha Heights', 'dubai south': 'Dubai South', 'expo': 'Dubai South',
+    'jaddaf': 'Al Jaddaf', 'festival city': 'Dubai Festival City',
+    'academic city': 'Academic City', 'silicon oasis': 'Dubai Silicon Oasis',
+    'healthcare city': 'Dubai Healthcare City', 'knowledge village': 'Knowledge Village',
   };
   for (const [key, val] of Object.entries(areaMap)) {
     if (msg.includes(key)) { filters.area = val; break; }

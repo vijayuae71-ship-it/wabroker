@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { config } from '../config';
 import { SYSTEM_PROMPT } from './prompts';
 import { searchProperties, searchPropertiesBroad, extractFiltersFromContext, formatPropertiesForAI, Property } from '../services/propertyService';
+import { getLiveMarketData, formatLiveMarketMessage } from '../services/propertyScraper';
 
 const openai = new OpenAI({ apiKey: config.openaiApiKey });
 
@@ -13,6 +14,7 @@ export interface WebChatMessage {
 export interface PrefilledParams {
   intent?: string;
   type?: string;
+  bedrooms?: string;   // '1','2','3','4','studio' — from qualifying flow
   area?: string;
   budget_min?: number;
   budget_max?: number;
@@ -98,6 +100,14 @@ export async function processWebMessage(
       matchedProperties = properties;
       if (properties.length > 0) {
         enrichedContext = `\n\n[PROPERTY DATA FOR CONTEXT ONLY — DO NOT LIST IN YOUR MESSAGE]\n${formatPropertiesForAI(properties)}\n[END PROPERTY DATA]`;
+      } else if (filters.area) {
+        // DB had no match — try live market scrape from PropertyFinder
+        const listingType = filters.listingType || (fakeLead.intent === 'rent' ? 'rent' : 'sale');
+        const bedrooms = filters.bedrooms || (fakeLead.bedrooms as string) || 'studio';
+        const liveData = await getLiveMarketData(filters.area, bedrooms, listingType as 'sale' | 'rent');
+        if (liveData) {
+          enrichedContext = `\n\n[LIVE MARKET DATA FROM PROPERTYFINDER — USE THIS]\n${formatLiveMarketMessage(liveData)}\n[END LIVE DATA]`;
+        }
       }
     } catch (err) {
       console.error('Property search error:', err);
@@ -154,6 +164,7 @@ async function handlePrefilledSearch(prefilled: PrefilledParams): Promise<WebCha
     const fakeLead: Record<string, unknown> = {
       intent: prefilled.intent,
       property_type: prefilled.type,
+      bedrooms: prefilled.bedrooms,  // ← pass through bedrooms
       preferred_areas: prefilled.area && prefilled.area !== 'Any' ? [prefilled.area] : [],
       budget_max: prefilled.budget_max,
       budget_min: prefilled.budget_min,
@@ -180,16 +191,33 @@ async function handlePrefilledSearch(prefilled: PrefilledParams): Promise<WebCha
         quickReplies: ['Book Viewing 📅', 'More Options 🔍', 'Mortgage Calc 💰', 'Different Area 📍'],
         contactCard: false,
       };
-    } else {
-      return {
-        message: `Welcome${nameGreet}! 👋 I couldn't find an exact match, but let me broaden the search a little for you. What's most important — area, budget, or property type?`,
-        language: 'en',
-        stage: 'qualifying',
-        properties: [],
-        quickReplies: ['Change Area 📍', 'Adjust Budget 💰', 'Different Type 🏠'],
-        contactCard: false,
-      };
     }
+
+    // ── DB has no match — try live market data from PropertyFinder ───────────
+    if (prefilled.area && prefilled.area !== 'Any') {
+      const listingType = prefilled.intent === 'rent' ? 'rent' : 'sale';
+      const bedrooms = prefilled.bedrooms || 'studio';
+      const liveData = await getLiveMarketData(prefilled.area, bedrooms, listingType);
+      if (liveData) {
+        return {
+          message: formatLiveMarketMessage(liveData),
+          language: 'en',
+          stage: 'live_market',
+          properties: [],
+          quickReplies: ['Show Nearby Areas 📍', 'Change Budget 💰', 'Book Viewing 📅'],
+          contactCard: false,
+        };
+      }
+    }
+
+    return {
+      message: `Welcome${nameGreet}! 👋 I couldn't find an exact match, but let me broaden the search a little for you. What's most important — area, budget, or property type?`,
+      language: 'en',
+      stage: 'qualifying',
+      properties: [],
+      quickReplies: ['Change Area 📍', 'Adjust Budget 💰', 'Different Type 🏠'],
+      contactCard: false,
+    };
   } catch (err) {
     console.error('Prefilled search error:', err);
     return {
@@ -224,6 +252,7 @@ function buildLeadFromContext(text: string, prefilled?: PrefilledParams): Record
   // Use prefilled params first
   if (prefilled?.intent) lead.intent = prefilled.intent;
   if (prefilled?.type) lead.property_type = prefilled.type;
+  if (prefilled?.bedrooms) lead.bedrooms = prefilled.bedrooms;   // ← CRITICAL: carry bedroom count
   if (prefilled?.area && prefilled.area !== 'Any') lead.preferred_areas = [prefilled.area];
   if (prefilled?.budget_max) lead.budget_max = prefilled.budget_max;
   if (prefilled?.budget_min) lead.budget_min = prefilled.budget_min;
