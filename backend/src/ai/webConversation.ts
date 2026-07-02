@@ -1,8 +1,8 @@
 import OpenAI from 'openai';
 import { config } from '../config';
 import { SYSTEM_PROMPT } from './prompts';
-import { searchProperties, searchPropertiesBroad, extractFiltersFromContext, formatPropertiesForAI, Property } from '../services/propertyService';
-import { getLiveMarketData, formatLiveMarketMessage } from '../services/propertyScraper';
+import { extractFiltersFromContext, formatPropertiesForAI, Property } from '../services/propertyService';
+import { fetchLiveListings, LiveSearchFilters } from '../services/liveListings';
 
 const openai = new OpenAI({ apiKey: config.openaiApiKey });
 
@@ -93,28 +93,23 @@ export async function processWebMessage(
     try {
       const fakeLead = buildLeadFromContext(allText, prefilled);
       const filters = extractFiltersFromContext(message, fakeLead);
-      let properties = await searchProperties(filters, 6);
-      // STRICT AREA RULE: if user asked for a specific area and DB has no match,
-      // NEVER fall back to other areas — that destroys authenticity.
-      // Only use broad fallback (drops area) when NO area was specified.
-      if (properties.length === 0 && !filters.area) {
-        properties = await searchPropertiesBroad(filters, 6);
-      }
+      // ── LIVE API SEARCH: Bayut + PropertyFinder in parallel ────────────────
+      const liveFilters: LiveSearchFilters = {
+        intent:       fakeLead.intent as string | undefined,
+        propertyType: filters.propertyType || (fakeLead.property_type as string | undefined),
+        area:         filters.area || (Array.isArray(fakeLead.preferred_areas) ? (fakeLead.preferred_areas as string[])[0] : undefined),
+        budgetMin:    filters.minPrice,
+        budgetMax:    filters.maxPrice,
+        bedrooms:     filters.bedrooms || (fakeLead.bedrooms as string | undefined),
+      };
+      const { properties, sources } = await fetchLiveListings(liveFilters, 6);
       matchedProperties = properties;
       if (properties.length > 0) {
-        enrichedContext = `\n\n[PROPERTY DATA FOR CONTEXT ONLY — DO NOT LIST IN YOUR MESSAGE]\n${formatPropertiesForAI(properties)}\n[END PROPERTY DATA]`;
-      } else if (filters.area) {
-        // DB had no match for this area — try live market scrape from PropertyFinder
-        const listingType = filters.listingType || (fakeLead.intent === 'rent' ? 'rent' : 'sale');
-        const bedrooms = filters.bedrooms || (fakeLead.bedrooms as string) || 'studio';
-        const liveData = await getLiveMarketData(filters.area, bedrooms, listingType as 'sale' | 'rent');
-        if (liveData) {
-          enrichedContext = `\n\n[LIVE MARKET DATA FROM PROPERTYFINDER — USE THIS]\n${formatLiveMarketMessage(liveData)}\n[END LIVE DATA]`;
-        } else {
-          enrichedContext = `\n\n[AREA NOT IN DB]\nUser asked for ${filters.area}. We don't have listings there yet. Tell the user honestly we don't have ${filters.area} listings in our current portfolio, and offer to help them with nearby alternatives OR note it and follow up. Do NOT invent listings or show properties from other areas.\n[END]`;
-        }
+        const sourceNote = sources.length > 0 ? ` (live from ${sources.join(' + ')})` : '';
+        enrichedContext = `\n\n[LIVE PROPERTY DATA${sourceNote} — DO NOT LIST IN YOUR MESSAGE]\n${formatPropertiesForAI(properties)}\n[END PROPERTY DATA]`;
+      } else if (liveFilters.area) {
+        enrichedContext = `\n\n[NO LIVE RESULTS]\nUser asked for ${liveFilters.area}. Bayut and PropertyFinder returned no results for these exact criteria. Tell the user honestly and suggest: (1) slightly higher budget, (2) nearby area, or (3) different bedroom count. Do NOT show properties from unrelated areas.\n[END]`;
       } else {
-        // No area specified, no results — broad search also returned nothing
         enrichedContext = `\n\n[NO RESULTS]\nNo properties match these exact criteria. Suggest adjusting budget or property type. Do NOT show listings from unrelated areas.\n[END]`;
       }
     } catch (err) {
@@ -181,19 +176,25 @@ async function handlePrefilledSearch(prefilled: PrefilledParams): Promise<WebCha
     const searchContext = `${prefilled.intent || 'buy'} ${prefilled.type || ''} ${prefilled.area || ''} budget ${prefilled.budget_max || ''}`;
     const filters = extractFiltersFromContext(searchContext, fakeLead);
 
-    let properties = await searchProperties(filters, 6);
-    // STRICT AREA RULE: never drop area filter to fill results with wrong-area properties
-    if (properties.length === 0 && !filters.area) {
-      properties = await searchPropertiesBroad(filters, 6);
-    }
+    // ── LIVE API SEARCH for prefilled/WhatsApp path ──────────────────────────
+    const liveFilters: LiveSearchFilters = {
+      intent:       prefilled.intent,
+      propertyType: prefilled.type,
+      area:         prefilled.area && prefilled.area !== 'Any' ? prefilled.area : undefined,
+      budgetMin:    prefilled.budget_min,
+      budgetMax:    prefilled.budget_max,
+      bedrooms:     prefilled.bedrooms,
+    };
+    const { properties, sources } = await fetchLiveListings(liveFilters, 6);
 
     const nameGreet = prefilled.name ? `, ${prefilled.name}` : '';
-    const intentWord = prefilled.intent === 'rent' ? 'rental' : 'properties';
+    const intentWord = prefilled.intent === 'rent' ? 'rentals' : 'properties';
     const areaWord = prefilled.area && prefilled.area !== 'Any' ? ` in ${prefilled.area}` : ' in Dubai';
+    const sourceNote = sources.length > 0 ? ` *(live from ${sources.join(' + ')})*` : '';
 
     if (properties.length > 0) {
       return {
-        message: `Welcome${nameGreet}! 🌟 Based on your search, I found *${properties.length} ${intentWord}*${areaWord} that match your criteria. Take a look below 👇`,
+        message: `Welcome${nameGreet}! 🌟 I found *${properties.length} ${intentWord}*${areaWord} that match your criteria${sourceNote}. Take a look below 👇`,
         language: 'en',
         stage: 'showing',
         properties,
@@ -202,25 +203,9 @@ async function handlePrefilledSearch(prefilled: PrefilledParams): Promise<WebCha
       };
     }
 
-    // ── DB has no match — try live market data from PropertyFinder ───────────
-    if (prefilled.area && prefilled.area !== 'Any') {
-      const listingType = prefilled.intent === 'rent' ? 'rent' : 'sale';
-      const bedrooms = prefilled.bedrooms || 'studio';
-      const liveData = await getLiveMarketData(prefilled.area, bedrooms, listingType);
-      if (liveData) {
-        return {
-          message: formatLiveMarketMessage(liveData),
-          language: 'en',
-          stage: 'live_market',
-          properties: [],
-          quickReplies: ['Show Nearby Areas 📍', 'Change Budget 💰', 'Book Viewing 📅'],
-          contactCard: false,
-        };
-      }
-    }
-
+    // No live results — honest response with suggestions
     return {
-      message: `Welcome${nameGreet}! 👋 I couldn't find an exact match, but let me broaden the search a little for you. What's most important — area, budget, or property type?`,
+      message: `Welcome${nameGreet}! 👋 I searched both Bayut and PropertyFinder for ${intentWord}${areaWord} but didn't find exact matches right now. Would you like me to try a nearby area, adjust the budget, or change the bedroom count?`,
       language: 'en',
       stage: 'qualifying',
       properties: [],
