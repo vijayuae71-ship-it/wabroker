@@ -36,13 +36,18 @@ const WEB_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 ## WEB CHAT MODE — CRITICAL RULES
 You are in web chat mode. The frontend renders beautiful visual property cards automatically.
 - NEVER list properties as text. NEVER write "AED X/year", sqft, floors, amenities in your message.
-- When properties are found, write ONLY a short warm message like: "I found 3 perfect matches for you! ✨ Take a look 👇"
 - Keep ALL messages to 1-3 sentences max. Punchy, warm, conversational.
 - DO NOT format property details in text. The UI handles all visual display.
 - Respond in plain text only — no JSON, no markdown lists.
 - NEVER ask for information that was already provided (the client came from WhatsApp with filters pre-set).
 - After showing properties, ask for their name and contact details warmly.
 - If they skip contact details, show the contact card and wish them well.
+
+## PROPERTY RESULTS — STRICT HONESTY RULES
+- If the context contains [LIVE PROPERTY DATA], say ONLY: "I found X perfect matches for you! ✨ Take a look 👇" — nothing else.
+- If the context contains [NO LIVE RESULTS] or [NO RESULTS], NEVER say "I found" or "I have" or "here are" properties. Be honest: say the search returned no exact matches and offer to try a nearby area, adjust budget, or change bedroom count. Suggest 2-3 specific nearby areas.
+- If no property context is present at all, do NOT invent listings. Help the user refine their search.
+- CRITICAL: Only claim to have found properties when [LIVE PROPERTY DATA] is in your context.
 `;
 
 export async function processWebMessage(
@@ -83,6 +88,11 @@ export async function processWebMessage(
     'studio','bedroom','bhk','unit','find','search','recommend','suggest','cheap','buy','rent',
     'invest','price','cost','afford','budget','how much','market','give me','show me','looking',
     'want','need','marina','downtown','jvc','palm','hills','bay','deira','barsha','jbr','difc',
+    'bur dubai','mankool','al karama','jumeirah','silicon oasis','mirdif','discovery',
+    'international city','business bay','creek','bluewaters','al furjan','dubailand',
+    'sports city','al quoz','meydan','sobha','springs','meadows','greens','emirates hills',
+    'media city','internet city','knowledge village','golf estates','town square','dubai south',
+    'change area','adjust budget','different type','any area',
   ];
   const hasPropertyIntent = propertyKeywords.some(kw => allText.toLowerCase().includes(kw));
 
@@ -228,10 +238,18 @@ async function handlePrefilledSearch(prefilled: PrefilledParams): Promise<WebCha
 function getQuickReplies(msg: string, hasProperties: boolean): string[] {
   if (hasProperties) return ['Book Viewing 📅', 'More Options 🔍', 'Mortgage Calc 💰', 'Different Area 📍'];
   const lower = msg.toLowerCase();
-  if (lower.includes('budget') || lower.includes('afford')) return ['Under AED 1M 💰', '1–2M 🏠', '2–5M 🏢', '5M+ 👑'];
-  if (lower.includes('area') || lower.includes('where') || lower.includes('location')) return ['Downtown 🌆', 'Marina 🌊', 'JVC 🏘', 'Palm 🌴', 'Business Bay'];
-  if (lower.includes('buy') || lower.includes('rent')) return ['Buy 🔑', 'Rent 🏠', 'Invest 📈', 'Off-Plan 🏗'];
-  return ['Buy 🔑', 'Rent 🏠', 'Invest 📈', 'Off-Plan 🏗', 'Golden Visa 🏅'];
+  // When no properties found — always show helpful refinement options
+  if (lower.includes('no exact') || lower.includes('no match') || lower.includes('didn\'t find') || lower.includes('no result')) {
+    return ['Change Area 📍', 'Adjust Budget 💰', 'Different Type 🏠', 'Any Area in Dubai 🌐'];
+  }
+  if (lower.includes('budget') || lower.includes('afford')) return ['Under 70k/yr 💰', '70–120k/yr 🏠', '120k+ /yr 🏢'];
+  if (lower.includes('area') || lower.includes('where') || lower.includes('location') || lower.includes('nearby')) {
+    return ['Downtown 🌆', 'Marina 🌊', 'JVC 🏘', 'Palm 🌴', 'Business Bay'];
+  }
+  if (lower.includes('buy') || lower.includes('rent') || lower.includes('invest')) {
+    return ['Change Area 📍', 'Adjust Budget 💰', 'Different Type 🏠', 'Any Area in Dubai 🌐'];
+  }
+  return ['Change Area 📍', 'Adjust Budget 💰', 'Different Type 🏠', 'Any Area in Dubai 🌐'];
 }
 
 function detectLanguage(text: string): string {

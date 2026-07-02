@@ -32,6 +32,13 @@ const LOCATION_CACHE: Record<string, number> = {
   'jvc':                                  2393,
   'deira':                                 264,
   'bur dubai':                            3638,
+  'al mankool':                           3638,  // sub-area of Bur Dubai
+  'mankhool':                             3638,  // common alternate spelling
+  'al raffa':                             3638,  // sub-area of Bur Dubai
+  'oud metha':                            3638,  // adjacent Bur Dubai area
+  'al hamriya':                           3638,  // Bur Dubai sub-area
+  'al fahidi':                            3638,  // Bur Dubai historic district
+  'al jafiliya':                          3638,  // Bur Dubai sub-area
   'al barsha':                             281,
   'jbr':                                   425,
   'jumeirah beach residence':              425,

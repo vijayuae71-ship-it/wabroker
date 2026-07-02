@@ -35,6 +35,32 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/webchat', webchatRouter);
 app.use('/api/bookings', bookingsRouter);
 
+// ── Debug: test Bayut API live ────────────────────────────────────────────────
+app.get('/debug/bayut-test', async (_req, res) => {
+  try {
+    const { fetchBayutListings } = await import('./services/bayutApi');
+    const results = await fetchBayutListings({
+      purpose: 'for-rent',
+      propertyType: 'apartment',
+      area: 'Bur Dubai',
+      bedsMin: 1,
+      bedsMax: 1,
+      priceMax: 100000,
+      limit: 3,
+    });
+    res.json({
+      status: 'ok',
+      count: results.length,
+      key_set: !!process.env.RAPIDAPI_KEY,
+      key_prefix: process.env.RAPIDAPI_KEY ? process.env.RAPIDAPI_KEY.substring(0, 8) + '...' : 'NOT SET',
+      sample: results.slice(0, 2).map(p => ({ title: p.title, area: p.area, price: p.price, photos: p.photoUrls?.length ?? 0 })),
+    });
+  } catch (e: unknown) {
+    const err = e as Error;
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
 app.get('/health', async (_req, res) => {
   try {
     await pool.query('SELECT 1');
