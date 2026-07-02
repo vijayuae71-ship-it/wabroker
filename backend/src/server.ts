@@ -35,25 +35,27 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/webchat', webchatRouter);
 app.use('/api/bookings', bookingsRouter);
 
-// ── Debug: test Bayut API live ────────────────────────────────────────────────
+// ── Debug: test Bayut scraper + API live ──────────────────────────────────────
 app.get('/debug/bayut-test', async (_req, res) => {
   try {
-    const { fetchBayutListings } = await import('./services/bayutApi');
-    const results = await fetchBayutListings({
-      purpose: 'for-rent',
-      propertyType: 'apartment',
-      area: 'Bur Dubai',
-      bedsMin: 1,
-      bedsMax: 1,
-      priceMax: 100000,
-      limit: 3,
-    });
+    const { scrapeBayutListings } = await import('./services/bayutScraper');
+    const { fetchBayutListings }  = await import('./services/bayutApi');
+    const [scraped, api] = await Promise.allSettled([
+      scrapeBayutListings({ purpose: 'for-rent', area: 'Dubai Marina', propertyType: 'apartment', limit: 3 }),
+      fetchBayutListings({ purpose: 'for-rent', area: 'Dubai Marina', limit: 3 }),
+    ]);
+    const scrapedResults = scraped.status === 'fulfilled' ? scraped.value : [];
+    const apiResults     = api.status     === 'fulfilled' ? api.value     : [];
     res.json({
-      status: 'ok',
-      count: results.length,
-      key_set: !!process.env.RAPIDAPI_KEY,
-      key_prefix: process.env.RAPIDAPI_KEY ? process.env.RAPIDAPI_KEY.substring(0, 8) + '...' : 'NOT SET',
-      sample: results.slice(0, 2).map(p => ({ title: p.title, area: p.area, price: p.price, photos: p.photoUrls?.length ?? 0 })),
+      scraper:  {
+        count:  scrapedResults.length,
+        sample: scrapedResults.slice(0, 2).map(p => ({ title: p.title, price: p.price, photos: p.photoUrls?.length ?? 0, area: p.area })),
+      },
+      rapidapi: {
+        count:      apiResults.length,
+        key_set:    !!process.env.RAPIDAPI_KEY,
+        key_prefix: process.env.RAPIDAPI_KEY ? process.env.RAPIDAPI_KEY.substring(0, 8) + '...' : 'NOT SET',
+      },
     });
   } catch (e: unknown) {
     const err = e as Error;

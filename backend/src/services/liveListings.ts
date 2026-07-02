@@ -1,128 +1,112 @@
 /**
  * liveListings.ts — Unified live property search
  *
- * Runs Bayut + PropertyFinder in parallel, merges, deduplicates,
- * and returns the best-matching listings sorted by relevance.
+ * Priority:
+ * 1. Bayut website scraper (no API key, always fresh, real photos)
+ * 2. Bayut RapidAPI (if key subscribed)
+ * 3. PropertyFinder RapidAPI (fallback)
  */
 
-import { Property } from './propertyService';
-import { fetchBayutListings, parseBedsForBayut } from './bayutApi';
+import { scrapeBayutListings }    from './bayutScraper';
+import { fetchBayutListings }     from './bayutApi';
 import { fetchFromPropertyFinder } from './propertyFinderApi';
+import { Property }               from './propertyService';
 
 export interface LiveSearchFilters {
-  intent?:        string;
+  intent?:        string;   // 'buy' | 'rent' | 'invest' | 'off-plan' | 'golden-visa'
   propertyType?:  string;
   area?:          string;
   budgetMin?:     number;
   budgetMax?:     number;
-  bedrooms?:      string;
+  bedrooms?:      string;   // '1' | '2' | '3' | 'studio' etc
 }
 
-// How many to fetch from each source
-const PER_SOURCE = 6;
-
-// ── Deduplication: remove listings with same price + area + bedrooms ──────────
-function deduplicate(listings: Property[]): Property[] {
-  const seen = new Set<string>();
-  return listings.filter(p => {
-    const key = `${p.area.toLowerCase()}-${p.bedrooms}-${p.price}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-// ── Score a listing for relevance (higher = better match) ────────────────────
-function score(p: Property, filters: LiveSearchFilters): number {
-  let s = 0;
-
-  // Has photos → big boost (authenticity)
-  if (p.photoUrls && p.photoUrls.length > 0) s += 30;
-
-  // Area match
-  if (filters.area) {
-    const area = filters.area.toLowerCase();
-    const pArea = (p.area + ' ' + p.community).toLowerCase();
-    if (pArea.includes(area)) s += 40;
-  }
-
-  // Bedroom exact match
-  if (filters.bedrooms) {
-    const want = filters.bedrooms.toLowerCase().trim();
-    const have = p.bedrooms.toLowerCase().trim();
-    if (want === have) s += 20;
-    if ((want === 'studio' || want === '0') && (have === 'studio' || have === '0')) s += 20;
-  }
-
-  // Budget range
-  if (filters.budgetMax && p.price <= filters.budgetMax) s += 10;
-  if (filters.budgetMin && p.price >= filters.budgetMin) s += 5;
-
-  // Verified / featured
-  if (p.isFeatured) s += 5;
-
-  // Recent listings preferred
-  if (p.daysOnMarket < 7)  s += 8;
-  if (p.daysOnMarket < 30) s += 4;
-
-  return s;
-}
-
-// ── Intent → Bayut purpose param ─────────────────────────────────────────────
-function toBayutPurpose(intent?: string): 'for-rent' | 'for-sale' {
+function intentToPurpose(intent?: string): 'for-rent' | 'for-sale' {
   if (!intent) return 'for-rent';
   const i = intent.toLowerCase();
-  if (i.includes('buy') || i.includes('sale') || i.includes('purchase')) return 'for-sale';
-  return 'for-rent';
+  if (i.includes('rent')) return 'for-rent';
+  return 'for-sale';
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
+function bedsToMinMax(bedrooms?: string): { bedsMin?: number; bedsMax?: number } {
+  if (!bedrooms) return {};
+  if (bedrooms === 'studio') return { bedsMin: 0, bedsMax: 0 };
+  const n = parseInt(bedrooms, 10);
+  if (isNaN(n)) return {};
+  return { bedsMin: n, bedsMax: n };
+}
+
 export async function fetchLiveListings(
   filters: LiveSearchFilters,
   limit = 6
 ): Promise<{ properties: Property[]; sources: string[] }> {
 
-  console.log('[liveListings] fetching from Bayut + PropertyFinder in parallel');
+  const purpose = intentToPurpose(filters.intent);
+  const { bedsMin, bedsMax } = bedsToMinMax(filters.bedrooms);
 
-  const { bedsMin, bedsMax } = parseBedsForBayut(filters.bedrooms);
+  const bayutParams = {
+    purpose,
+    propertyType: filters.propertyType,
+    area:         filters.area,
+    bedsMin,
+    bedsMax,
+    priceMin:     filters.budgetMin,
+    priceMax:     filters.budgetMax,
+    limit:        limit + 4,
+  };
 
-  // Fire both in parallel — if one fails, it returns []
-  const [bayutResult, pfResult] = await Promise.allSettled([
-    fetchBayutListings({
-      purpose:      toBayutPurpose(filters.intent),
-      propertyType: filters.propertyType,
-      area:         filters.area,
-      bedsMin,
-      bedsMax,
-      priceMin:     filters.budgetMin,
-      priceMax:     filters.budgetMax,
-      limit:        PER_SOURCE,
-    }),
-    fetchFromPropertyFinder(filters, PER_SOURCE),
+  // Run all three sources in parallel
+  const [scraped, bayutApi, pfApi] = await Promise.allSettled([
+    scrapeBayutListings(bayutParams),
+    fetchBayutListings(bayutParams),
+    fetchFromPropertyFinder(filters, limit + 4),
   ]);
 
+  const scrapedResults = scraped.status  === 'fulfilled' ? scraped.value  : [];
+  const bayutResults   = bayutApi.status === 'fulfilled' ? bayutApi.value : [];
+  const pfResults      = pfApi.status    === 'fulfilled' ? pfApi.value    : [];
+
+  console.log(`[liveListings] scraper=${scrapedResults.length} bayutApi=${bayutResults.length} pf=${pfResults.length}`);
+
   const sources: string[] = [];
-  let combined: Property[] = [];
+  if (scrapedResults.length > 0) sources.push('Bayut');
+  if (bayutResults.length > 0)   sources.push('Bayut API');
+  if (pfResults.length > 0)      sources.push('PropertyFinder');
 
-  if (bayutResult.status === 'fulfilled' && bayutResult.value.length > 0) {
-    combined.push(...bayutResult.value.map((p: Property) => ({ ...p, source: 'bayut' })));
-    sources.push('Bayut');
+  // Merge: scraper first (freshest), then API results
+  const allResults = [...scrapedResults, ...bayutResults, ...pfResults];
+
+  // Deduplicate by id/refNo/title
+  const seen = new Set<string>();
+  const deduped: Property[] = [];
+  for (const p of allResults) {
+    const key = p.id || p.refNo || p.title;
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      deduped.push(p);
+    }
   }
-  if (pfResult.status === 'fulfilled' && pfResult.value.length > 0) {
-    combined.push(...pfResult.value);
-    sources.push('PropertyFinder');
-  }
 
-  console.log(`[liveListings] ${combined.length} total before dedup (${sources.join(' + ')})`);
+  // Score and rank
+  const areaLower = filters.area?.toLowerCase() ?? '';
+  const bedsNum   = parseInt(filters.bedrooms ?? '', 10);
 
-  combined = deduplicate(combined);
-  combined.sort((a, b) => score(b, filters) - score(a, filters));
+  const scored = deduped.map(p => {
+    let score = 0;
+    if (areaLower && p.area?.toLowerCase().includes(areaLower))           score += 10;
+    if (areaLower && p.community?.toLowerCase().includes(areaLower))      score += 8;
+    if (p.photoUrls && p.photoUrls.length > 0)                            score += 5;
+    if (p.photoUrls && p.photoUrls.length >= 3)                           score += 2;
+    if (!isNaN(bedsNum) && Number(p.bedrooms) === bedsNum)                score += 3;
+    if (filters.budgetMax && p.price <= filters.budgetMax)                score += 2;
+    if (filters.budgetMax && p.price <= filters.budgetMax * 0.9)          score += 1;
+    if (p.daysOnMarket != null && p.daysOnMarket < 30)                    score += 1;
+    return { p, score };
+  });
 
-  const final = combined.slice(0, limit);
-  console.log(`[liveListings] returning ${final.length} from: ${sources.join(', ')}`);
-
-  return { properties: final, sources };
+  scored.sort((a, b) => b.score - a.score);
+  return {
+    properties: scored.slice(0, limit).map(s => s.p),
+    sources,
+  };
 }
-
-// Re-export for convenience
-export { parseBedsForBayut };
